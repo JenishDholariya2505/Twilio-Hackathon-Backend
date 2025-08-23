@@ -2,12 +2,13 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const twilio = require("twilio");
+const { MessagingResponse } = twilio.twiml;
 
 const app = express();
 app.use(cors());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-// TEST
+
 // Debug environment variables
 console.log("=== Environment Check ===");
 console.log(
@@ -198,6 +199,22 @@ app.get("/call-logs", async (req, res) => {
     res.json({ success: true, calls });
   } catch (err) {
     console.error("Error fetching call logs:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get("/message-logs", async (req, res) => {
+  try {
+    const client_ = twilio(
+      process.env.TWILIO_ACCOUNT_SID, // ACxxx
+      process.env.TWILIO_AUTH_TOKEN // from Twilio console
+    );
+    const messages = await client_.messages.list({
+      limit: 5000, // max Twilio allows in one request
+    });
+    res.json({ success: true, messages });
+  } catch (err) {
+    console.error("Error fetching message logs:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
