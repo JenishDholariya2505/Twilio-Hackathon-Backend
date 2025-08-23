@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3001;
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.static("public"));
 
 // Twilio configuration
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -35,6 +36,11 @@ if (missingVars.length > 0) {
   );
   process.exit(1);
 }
+
+// Welcome page
+app.get("/", (req, res) => {
+  res.sendFile(__dirname + "/public/welcome.html");
+});
 
 // Health check endpoint
 app.get("/health", (req, res) => {
