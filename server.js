@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-
+// TEST
 // Debug environment variables
 console.log("=== Environment Check ===");
 console.log(
