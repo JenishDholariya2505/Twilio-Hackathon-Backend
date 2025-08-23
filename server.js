@@ -55,6 +55,80 @@ app.get("/token", (req, res) => {
     res.status(500).json({ error: "Failed to generate token" });
   }
 });
+app.get("/calls/forward", async (req, res) => {
+  const { ConferenceSid, NewNumber, core_call_number } = req.body;
+
+  const client_ = twilio(
+    process.env.TWILIO_ACCOUNT_SID, // ACxxx
+    process.env.TWILIO_AUTH_TOKEN // from Twilio console
+  );
+
+  try {
+    const participant = await client_
+      .conferences(ConferenceSid)
+      .participants.create({
+        to: NewNumber,
+        from: core_call_number,
+        earlyMedia: true,
+        endConferenceOnExit: false,
+        muted: false,
+        hold: false,
+        beep: "onEnter",
+      });
+
+    // participant.callSid
+    // ConferenceSid
+    const callSid = participant.callSid;
+
+    // Step 2: Poll until status = in-progress or timeout
+    let status = "queued";
+    let attempts = 0;
+
+    while (status !== "in-progress" && attempts < 10) {
+      const call = await client_.calls(callSid).fetch();
+      status = call.status; // ringing / in-progress / completed
+      console.log("Current status:", status);
+
+      if (status === "in-progress") break;
+
+      // wait 2 sec before next check
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      attempts++;
+    }
+
+    res.json({
+      success: true,
+      sid: callSid,
+      ConferenceSid: participant.conferenceSid,
+      finalStatus: status,
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+  // try {
+  //   const AccessToken = twilio.jwt.AccessToken;
+  //   const VoiceGrant = AccessToken.VoiceGrant;
+
+  //   const token = new AccessToken(
+  //     process.env.TWILIO_ACCOUNT_SID,
+  //     process.env.TWILIO_API_KEY_SID,
+  //     process.env.TWILIO_API_KEY_SECRET,
+  //     { identity: "user123" } // frontend identity
+  //   );
+
+  //   const voiceGrant = new VoiceGrant({
+  //     outgoingApplicationSid: process.env.TWILIO_TWIML_APP_SID,
+  //     incomingAllow: true,
+  //   });
+
+  //   token.addGrant(voiceGrant);
+
+  //   res.send({ token: token.toJwt() });
+  // } catch (error) {
+  //   console.error("Token generation error:", error);
+  //   res.status(500).json({ error: "Failed to generate token" });
+  // }
+});
 
 app.post("/voice", (req, res) => {
   try {
