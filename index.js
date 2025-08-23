@@ -1,145 +1,131 @@
 const express = require("express");
 const cors = require("cors");
+const twilio = require("twilio");
 require("dotenv").config();
 
-// Twilio configuration
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
-
-// Initialize Twilio client
-const twilio = require("twilio");
-const client = twilio(accountSid, authToken);
-
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Routes
-app.get("/", (req, res) => {
-  res.json({
-    message: "Twilio Node.js API is running!",
-    status: "success",
-    timestamp: new Date().toISOString(),
-  });
-});
+// Twilio configuration
+const accountSid = process.env.TWILIO_ACCOUNT_SID;
+const apiKey = process.env.TWILIO_API_KEY;
+const apiSecret = process.env.TWILIO_API_SECRET;
+const twimlAppSid = process.env.TWILIO_TWIML_APP_SID;
 
-// Send SMS endpoint
-app.post("/send-sms", async (req, res) => {
-  try {
-    const { to, message } = req.body;
+// Validate required environment variables
+const requiredEnvVars = [
+  "TWILIO_ACCOUNT_SID",
+  "TWILIO_API_KEY",
+  "TWILIO_API_SECRET",
+  "TWILIO_TWIML_APP_SID",
+];
+const missingVars = requiredEnvVars.filter((varName) => !process.env[varName]);
 
-    if (!to || !message) {
-      return res.status(400).json({
-        error: "Missing required fields: to and message",
-      });
-    }
-
-    const smsResponse = await client.messages.create({
-      body: message,
-      from: twilioPhoneNumber,
-      to: to,
-    });
-
-    res.json({
-      success: true,
-      message: "SMS sent successfully",
-      sid: smsResponse.sid,
-      status: smsResponse.status,
-    });
-  } catch (error) {
-    console.error("Error sending SMS:", error);
-    res.status(500).json({
-      error: "Failed to send SMS",
-      details: error.message,
-    });
-  }
-});
-
-// Make voice call endpoint
-app.post("/make-call", async (req, res) => {
-  try {
-    const { to, twimlUrl } = req.body;
-
-    if (!to || !twimlUrl) {
-      return res.status(400).json({
-        error: "Missing required fields: to and twimlUrl",
-      });
-    }
-
-    const callResponse = await client.calls.create({
-      url: twimlUrl,
-      from: twilioPhoneNumber,
-      to: to,
-    });
-
-    res.json({
-      success: true,
-      message: "Call initiated successfully",
-      sid: callResponse.sid,
-      status: callResponse.status,
-    });
-  } catch (error) {
-    console.error("Error making call:", error);
-    res.status(500).json({
-      error: "Failed to make call",
-      details: error.message,
-    });
-  }
-});
-
-// Get message history
-app.get("/messages", async (req, res) => {
-  try {
-    const messages = await client.messages.list({
-      limit: 20,
-    });
-
-    res.json({
-      success: true,
-      messages: messages.map((msg) => ({
-        sid: msg.sid,
-        from: msg.from,
-        to: msg.to,
-        body: msg.body,
-        status: msg.status,
-        dateCreated: msg.dateCreated,
-      })),
-    });
-  } catch (error) {
-    console.error("Error fetching messages:", error);
-    res.status(500).json({
-      error: "Failed to fetch messages",
-      details: error.message,
-    });
-  }
-});
+if (missingVars.length > 0) {
+  console.error(
+    "❌ Missing required environment variables:",
+    missingVars.join(", ")
+  );
+  console.error(
+    "Please check your .env file and ensure all required variables are set."
+  );
+  process.exit(1);
+}
 
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({
     status: "healthy",
-    twilioConfigured: !!(accountSid && authToken),
+    twilioConfigured: !!(accountSid && apiKey && apiSecret && twimlAppSid),
     timestamp: new Date().toISOString(),
   });
 });
 
+// Generate Twilio Voice access token
+app.get("/token", (req, res) => {
+  try {
+    const { identity } = req.query;
+
+    if (!identity) {
+      return res.status(400).json({
+        error: "Missing required parameter: identity",
+        message: "Please provide an identity parameter in the query string",
+      });
+    }
+
+    // Create access token
+    const accessToken = new twilio.jwt.AccessToken(
+      accountSid,
+      apiKey,
+      apiSecret,
+      { identity }
+    );
+
+    // Create Voice grant
+    const voiceGrant = new twilio.jwt.AccessToken.VoiceGrant({
+      outgoingApplicationSid: twimlAppSid,
+      incomingAllow: true,
+    });
+
+    // Add Voice grant to token
+    accessToken.addGrant(voiceGrant);
+
+    // Generate token
+    const token = accessToken.toJwt();
+
+    res.json({
+      token,
+      identity,
+      success: true,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Error generating token:", error);
+    res.status(500).json({
+      error: "Failed to generate access token",
+      message: error.message,
+      success: false,
+    });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error("Server error:", err.stack);
   res.status(500).json({
-    error: "Something went wrong!",
+    error: "Internal server error",
     message: err.message,
+    success: false,
+  });
+});
+
+// 404 handler
+app.use("*", (req, res) => {
+  res.status(404).json({
+    error: "Endpoint not found",
+    message: `The requested endpoint ${req.originalUrl} does not exist`,
+    success: false,
   });
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server is running on port ${PORT}`);
-  console.log(`📱 Twilio configured: ${!!(accountSid && authToken)}`);
+  console.log(`🚀 Twilio Voice API server running on port ${PORT}`);
+  console.log(
+    `📱 Twilio configured: ${!!(
+      accountSid &&
+      apiKey &&
+      apiSecret &&
+      twimlAppSid
+    )}`
+  );
   console.log(`🌐 API available at: http://localhost:${PORT}`);
+  console.log(
+    `🔑 Token endpoint: http://localhost:${PORT}/token?identity=YOUR_IDENTITY`
+  );
+  console.log(`💚 Health check: http://localhost:${PORT}/health`);
 });
