@@ -55,7 +55,7 @@ app.get("/token", (req, res) => {
     res.status(500).json({ error: "Failed to generate token" });
   }
 });
-app.get("/calls/forward", async (req, res) => {
+app.post("/calls/forward", async (req, res) => {
   const { ConferenceSid, NewNumber, core_call_number } = req.body;
 
   const client_ = twilio(
