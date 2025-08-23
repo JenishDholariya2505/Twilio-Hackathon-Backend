@@ -1,137 +1,210 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const twilio = require("twilio");
-require("dotenv").config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
-
-// Middleware
 app.use(cors());
+app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-app.use(express.static("public"));
 
-// Twilio configuration
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const apiKey = process.env.TWILIO_API_KEY;
-const apiSecret = process.env.TWILIO_API_SECRET;
-const twimlAppSid = process.env.TWILIO_TWIML_APP_SID;
+// Debug environment variables
+console.log("=== Environment Check ===");
+console.log(
+  "TWILIO_ACCOUNT_SID:",
+  process.env.TWILIO_ACCOUNT_SID ? "Set" : "MISSING"
+);
+console.log(
+  "TWILIO_API_KEY_SID:",
+  process.env.TWILIO_API_KEY_SID ? "Set" : "MISSING"
+);
+console.log(
+  "TWILIO_API_KEY_SECRET:",
+  process.env.TWILIO_API_KEY_SECRET ? "Set" : "MISSING"
+);
+console.log(
+  "TWILIO_TWIML_APP_SID:",
+  process.env.TWILIO_TWIML_APP_SID ? "Set" : "MISSING"
+);
+console.log("TWILIO_NUMBER:", process.env.TWILIO_NUMBER || "MISSING");
+console.log("========================\n");
 
-// Validate required environment variables
-const requiredEnvVars = [
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_API_KEY",
-  "TWILIO_API_SECRET",
-  "TWILIO_TWIML_APP_SID",
-];
-const missingVars = requiredEnvVars.filter((varName) => !process.env[varName]);
+app.get("/token", (req, res) => {
+  try {
+    const AccessToken = twilio.jwt.AccessToken;
+    const VoiceGrant = AccessToken.VoiceGrant;
 
-if (missingVars.length > 0) {
-  console.error(
-    "❌ Missing required environment variables:",
-    missingVars.join(", ")
-  );
-  console.error(
-    "Please check your .env file and ensure all required variables are set."
-  );
-  process.exit(1);
-}
+    const token = new AccessToken(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_API_KEY_SID,
+      process.env.TWILIO_API_KEY_SECRET,
+      { identity: "user123" } // frontend identity
+    );
 
-// Welcome page
-app.get("/", (req, res) => {
-  res.sendFile(__dirname + "/public/welcome.html");
+    const voiceGrant = new VoiceGrant({
+      outgoingApplicationSid: process.env.TWILIO_TWIML_APP_SID,
+      incomingAllow: true,
+    });
+
+    token.addGrant(voiceGrant);
+
+    res.send({ token: token.toJwt() });
+  } catch (error) {
+    console.error("Token generation error:", error);
+    res.status(500).json({ error: "Failed to generate token" });
+  }
+});
+
+app.post("/voice", (req, res) => {
+  try {
+    const { VoiceResponse } = require("twilio").twiml;
+    const vr = new VoiceResponse();
+
+    // Get the 'To' parameter from the request
+    const to = req.body.To || req.query.To;
+
+    if (!to) {
+      console.error("No 'To' parameter provided");
+      return res.status(400).send("Missing 'To' parameter");
+    }
+
+    console.log(`Incoming call request to: ${to}`);
+
+    const dial = vr.dial({
+      callerId: process.env.TWILIO_NUMBER, // your Twilio number
+      timeout: 30, // 30 second timeout
+    });
+
+    // Handle different types of destinations
+    if (to.startsWith("client:")) {
+      // Client-to-client call
+      dial.client(to.substring(7));
+    } else if (to.match(/^\+?\d{7,15}$/)) {
+      // PSTN call - allow numbers with or without +
+      const cleanNumber = to.startsWith("+") ? to : `+${to}`;
+      console.log(`Dialing number: ${cleanNumber}`);
+      dial.number(cleanNumber);
+    } else {
+      console.error(`Invalid destination: ${to}`);
+      return res.status(400).send("Invalid destination format");
+    }
+
+    res.type("text/xml");
+    res.send(vr.toString());
+  } catch (error) {
+    console.error("Voice webhook error:", error);
+    res.status(500).send("Internal server error");
+  }
+});
+
+// DTMF handler for call forwarding
+app.post("/dtmf-handler", (req, res) => {
+  try {
+    const { VoiceResponse } = require("twilio").twiml;
+    const vr = new VoiceResponse();
+
+    const digits = req.body.Digits;
+    console.log(`DTMF received: ${digits}`);
+
+    if (digits === "9") {
+      // Call forwarding logic
+      console.log("Call forwarding requested to +916353791329");
+
+      vr.say("Call is being forwarded to the forwarding number");
+
+      const dial = vr.dial({
+        callerId: process.env.TWILIO_NUMBER,
+        timeout: 30,
+        action: "/call-status",
+        method: "POST",
+      });
+
+      // Forward to another number (you can customize this)
+      dial.number("+916353791329"); // Your forwarding number
+    } else {
+      // Continue with original call
+      vr.say("Invalid option. Continuing with the call.");
+
+      // You can add logic here to continue the original call
+      const dial = vr.dial({
+        callerId: process.env.TWILIO_NUMBER,
+        timeout: 30,
+      });
+
+      // You might want to store the original number and dial it again
+      // For now, we'll just say goodbye
+      vr.say("Call ended.");
+    }
+
+    res.type("text/xml");
+    res.send(vr.toString());
+  } catch (error) {
+    console.error("DTMF handler error:", error);
+    res.status(500).send("Internal server error");
+  }
+});
+
+// Call status handler
+app.post("/call-status", (req, res) => {
+  console.log("Call status:", req.body.CallStatus);
+  res.sendStatus(200);
 });
 
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({
-    status: "healthy",
-    twilioConfigured: !!(accountSid && apiKey && apiSecret && twimlAppSid),
+    status: "OK",
     timestamp: new Date().toISOString(),
+    env_check: {
+      account_sid: !!process.env.TWILIO_ACCOUNT_SID,
+      api_key: !!process.env.TWILIO_API_KEY_SID,
+      api_secret: !!process.env.TWILIO_API_KEY_SECRET,
+      twiml_app: !!process.env.TWILIO_TWIML_APP_SID,
+      phone_number: !!process.env.TWILIO_NUMBER,
+    },
   });
 });
+app.post("/send-sms", async (req, res) => {
+  const { to, message } = req.body;
 
-// Generate Twilio Voice access token
-app.get("/token", (req, res) => {
   try {
-    const { identity } = req.query;
-
-    if (!identity) {
-      return res.status(400).json({
-        error: "Missing required parameter: identity",
-        message: "Please provide an identity parameter in the query string",
-      });
-    }
-
-    // Create access token
-    const accessToken = new twilio.jwt.AccessToken(
-      accountSid,
-      apiKey,
-      apiSecret,
-      { identity }
+    const client_ = twilio(
+      process.env.TWILIO_ACCOUNT_SID, // ACxxx
+      process.env.TWILIO_AUTH_TOKEN // from Twilio console
     );
-
-    // Create Voice grant
-    const voiceGrant = new twilio.jwt.AccessToken.VoiceGrant({
-      outgoingApplicationSid: twimlAppSid,
-      incomingAllow: true,
+    const msg = await client_.messages.create({
+      body: message,
+      from: process.env.TWILIO_NUMBER, // your Twilio number (+1xxx)
+      to, // must be verified if on Trial
     });
 
-    // Add Voice grant to token
-    accessToken.addGrant(voiceGrant);
-
-    // Generate token
-    const token = accessToken.toJwt();
-
-    res.json({
-      token,
-      identity,
-      success: true,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("Error generating token:", error);
-    res.status(500).json({
-      error: "Failed to generate access token",
-      message: error.message,
-      success: false,
-    });
+    res.json({ success: true, sid: msg.sid });
+  } catch (err) {
+    console.error("SMS Error:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error("Server error:", err.stack);
-  res.status(500).json({
-    error: "Internal server error",
-    message: err.message,
-    success: false,
-  });
+app.get("/call-logs", async (req, res) => {
+  try {
+    const client_ = twilio(
+      process.env.TWILIO_ACCOUNT_SID, // ACxxx
+      process.env.TWILIO_AUTH_TOKEN // from Twilio console
+    );
+    const calls = await client_.calls.list({
+      startTimeAfter: new Date("2025-01-01"), // all calls after Jan 1 2025
+      limit: 5000, // max Twilio allows in one request
+    });
+    res.json({ success: true, calls });
+  } catch (err) {
+    console.error("Error fetching call logs:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
-
-// 404 handler
-app.use("*", (req, res) => {
-  res.status(404).json({
-    error: "Endpoint not found",
-    message: `The requested endpoint ${req.originalUrl} does not exist`,
-    success: false,
-  });
-});
-
-// Start server
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 Twilio Voice API server running on port ${PORT}`);
-  console.log(
-    `📱 Twilio configured: ${!!(
-      accountSid &&
-      apiKey &&
-      apiSecret &&
-      twimlAppSid
-    )}`
-  );
-  console.log(`🌐 API available at: http://localhost:${PORT}`);
-  console.log(
-    `🔑 Token endpoint: http://localhost:${PORT}/token?identity=YOUR_IDENTITY`
-  );
-  console.log(`💚 Health check: http://localhost:${PORT}/health`);
+  console.log(`🚀 Backend running on port ${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`Token endpoint: http://localhost:${PORT}/token`);
+  console.log(`Voice webhook: http://localhost:${PORT}/voice`);
 });
